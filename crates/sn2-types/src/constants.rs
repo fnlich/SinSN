@@ -64,7 +64,7 @@ pub const CAPACITY_TARGET_HEADROOM: f64 = 1.5;
 /// the cap flaps one step up and down around the target every adjustment
 /// interval, spamming capacity events at equilibrium.
 pub const CAPACITY_TARGET_DEADBAND: f64 = 0.25;
-pub const BUNDLE_CACHE_IDLE_TTL_SECS: u64 = 3600;
+pub const BUNDLE_CACHE_IDLE_TTL_SECS: u64 = 300;
 pub const CAPACITY_ADJUST_INTERVAL_SECS: u64 = 15;
 pub const CAPACITY_UNIT_REFERENCE_PERCENTILE: f64 = 0.1;
 pub const CAPACITY_RAMP_MIN_AVAIL_MEM_RATIO: f64 = 0.20;
