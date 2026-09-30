@@ -37,7 +37,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::cli::Cli;
 
@@ -91,6 +91,8 @@ async fn main() -> Result<()> {
         .sync(&chain_client)
         .await
         .context("initial metagraph sync")?;
+    // Axon registration opens its own connections (see `register_axon`).
+    drop(chain_client);
 
     anyhow::ensure!(
         metagraph.get_uid_by_hotkey(wallet.hotkey_ss58()).is_some(),
@@ -151,16 +153,16 @@ async fn main() -> Result<()> {
         })
     };
 
+    // Registering an axon waits for block finalization and may retry for
+    // minutes, so it runs off the path that watches the server and signals.
     if let Some(external_ip) = external_ip {
-        match registration
-            .serve_axon(&chain_client, &wallet, external_ip, quic_port, 4)
-            .await
-        {
-            Ok(()) => {}
-            Err(e) => {
-                warn!(error = %e, "serve_axon failed (rate-limited or transient); miner will continue");
-            }
-        }
+        tokio::spawn(register_axon(
+            registration,
+            endpoint.clone(),
+            wallet.clone(),
+            external_ip,
+            quic_port,
+        ));
     }
 
     info!(
@@ -187,6 +189,66 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+const SERVE_AXON_TIMEOUT: Duration = Duration::from_secs(120);
+const SERVE_AXON_ATTEMPTS: u32 = 8;
+const SERVE_AXON_FIRST_BACKOFF: Duration = Duration::from_secs(15);
+const SERVE_AXON_MAX_BACKOFF: Duration = Duration::from_secs(300);
+
+/// Publishes the miner's axon, retrying with backoff.
+///
+/// Every attempt opens its own chain connection. The startup connection sits
+/// idle while a cold circuit cache downloads, which can take many minutes, and
+/// the chain RPC client neither pings nor reconnects: once the endpoint or a
+/// NAT on the way drops that idle socket, every call on it fails for good. A
+/// fresh connection per attempt avoids depending on it. Retrying after a
+/// timeout is safe because `serve_axon` first reads the chain and skips the
+/// extrinsic when the axon is already registered with this IP and port.
+async fn register_axon(
+    registration: sn2_chain::Registration,
+    endpoint: String,
+    wallet: std::sync::Arc<sn2_chain::Wallet>,
+    external_ip: IpAddr,
+    port: u16,
+) {
+    let mut backoff = SERVE_AXON_FIRST_BACKOFF;
+    for attempt in 1..=SERVE_AXON_ATTEMPTS {
+        let served = tokio::time::timeout(SERVE_AXON_TIMEOUT, async {
+            let client = sn2_chain::connect_chain(&endpoint).await?;
+            registration
+                .serve_axon(&client, &wallet, external_ip, port, 4)
+                .await
+        })
+        .await;
+        let error = match served {
+            Ok(Ok(())) => return,
+            // `{:#}` prints the whole context chain; the outermost context
+            // alone ("fetching latest block") hides the cause.
+            Ok(Err(e)) => format!("{e:#}"),
+            Err(_) => format!("timed out after {}s", SERVE_AXON_TIMEOUT.as_secs()),
+        };
+        if attempt == SERVE_AXON_ATTEMPTS {
+            error!(
+                hotkey = %wallet.hotkey_ss58(),
+                port,
+                attempts = attempt,
+                error,
+                "serve_axon failed; giving up, validators cannot find this miner until it is restarted"
+            );
+            return;
+        }
+        warn!(
+            hotkey = %wallet.hotkey_ss58(),
+            port,
+            attempt,
+            retry_in_secs = backoff.as_secs(),
+            error,
+            "serve_axon failed; retrying with a new chain connection"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(SERVE_AXON_MAX_BACKOFF);
+    }
 }
 
 async fn run_loopback(cli: Cli) -> Result<()> {
