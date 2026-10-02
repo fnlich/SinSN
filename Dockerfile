@@ -38,7 +38,7 @@ RUN CARGO_VERSION="${SN2_VERSION#v}" && \
     cargo build --release --locked --bin sn2-validator --bin sn2-miner
 
 ARG SN2_PLATFORM=linux/amd64
-FROM --platform=$SN2_PLATFORM debian:bookworm-20260610-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
+FROM --platform=$SN2_PLATFORM debian:bookworm-20260918-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     jq \
